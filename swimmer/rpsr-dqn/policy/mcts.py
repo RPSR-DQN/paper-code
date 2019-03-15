@@ -1,0 +1,179 @@
+# -*- coding: utf-8 -*-
+import gym
+import random
+import itertools
+import numpy as np
+import theano
+import theano.tensor as T
+from time import time
+from copy import copy
+from math import sqrt, log
+from rpsp.rpspnets.psr_lite.rffpsr_rnn import RFFPSR_RNN
+from rpsp.rpspnets.psr_lite.rffpsr import RFFPSR
+def combinations(space):
+    if isinstance(space, gym.spaces.Discrete):
+        return range(space.n)
+    elif isinstance(space, gym.spaces.Tuple):
+        return itertools.product(*[combinations(s) for s in space.spaces])
+    else:
+        raise NotImplementedError
+
+class Node:
+    def __init__(self,parent,state,action):
+        self.parent = parent
+        self.action = action
+        self.children = []
+        self.state=state
+        self.explored_children = 0
+        self.visits = 1
+        self.value = 1
+def ucb(node):
+    #print(node.parent.visits)
+    #print(node.value)
+    ucb=node.value / node.visits + sqrt(log(node.parent.visits)/node.visits)
+    return ucb
+class MCTS(object):
+    def __init__(self,model): 
+        self.model=model
+        
+        a=T.scalars('a')
+        b=T.scalars('b')
+        c=T.iscalars('c')
+        d = T.iscalars('d')
+        state=T.vector('state')
+        action=T.vector('action')
+        o=T.vector('o')
+        z_switch=T.switch(T.lt(a,b),c,d)
+        _predict_obs = self.model.tf_predict_guide(state.reshape((1,-1)),action.reshape((1,-1)))
+        self._update_state=self.model.tf_update_state(state,o,
+action)
+        self.f_switch=theano.function([a,b,c,d],z_switch,mode=theano.Mode(linker='vm'))
+        self.predict_obs=theano.function(inputs=[state, action],
+                                                outputs=_predict_obs,on_unused_input='ignore')
+        self.update_state = theano.function(inputs=[state,o, action], outputs = self._update_state)
+    def predict(self,o):
+        print("predict",o)
+        reward=0
+        terminal=0 
+        obser=abs(o[0,1])
+        t_obser=abs(o[0,0])
+        r=0.26
+        t=2.4     
+        terminal1=self.f_switch(obser,r,0,1)
+        terminal2=self.f_switch(t_obser,t,0,1)
+        if terminal1==0:
+            if terminal2==0:
+                terminal=0
+                
+            else:
+                terminal=1
+        else:
+            terminal=1
+        if terminal==0:
+            reward=1
+        return reward,terminal
+    def rollout(self,state,maxdepth):
+        node=Node(None,state,None)
+        terminal = False
+        sreward = 0
+        for i in xrange(maxdepth):
+            if not terminal:
+                node.children = [Node(node,state, a) for a in range(2)]#找出所有child
+                child = node.children[random.randint(0, 1)]#随机采样action
+                node=child  
+                if node.action==1:
+                    action=np.array([10,0])
+                else:
+                    action=np.array([-10,0])
+                act=self.model._process_fut_act(action)          
+                o=self.predict_obs(state,act)
+                print("rollout",o)
+                t_o=np.array([o[0][0],o[0][1]])
+                obs=self.model._process_obs(t_o)
+                _act=self.model._process_act(action)
+                state=self.update_state (state,obs,_act)
+                reward, terminal = self.predict(o)
+                sreward+=reward
+            if terminal:
+                break
+        return sreward
+        
+    def SelectAction(self,state,maxdepth=50,Numsimulation=5):
+        sre=0
+        z=np.array([0.26,2.4])
+        jixian=self.model._process_obs(z)
+        print("jixian",jixian)
+        print("chushizhuangtai",state)
+        sum_reward = 0
+        root = Node(None,state,None)       
+        for iter in xrange(15):
+            
+            node = root
+            terminal = False
+            actions = []
+
+                # selection
+            if node.children: 
+                #print("selection")
+                if node.explored_children < len(node.children):#访问未访问过的点
+                    #print("selection1")
+                    child = node.children[node.explored_children]
+                    node.explored_children += 1
+                    node = child
+                else:
+                    #print("selection2")
+                    n=len(node.children)
+                    
+                    bestucb=0
+                    nowucb=0
+                    for i in xrange(n): 
+                                       
+                        nowucb=ucb(node.children[i])
+                        if T.lt(bestucb, nowucb):                       
+                            bestnode=node.children[i]
+                            bestucb=nowucb
+                            
+                    node=bestnode
+
+            else:
+                 #print("rollout")
+                 node.children = [Node(node,state, a) for a in range(2)]#找出所有child
+                 child = node.children[random.randint(0, 1)]#随机采样action
+                 node=child
+           
+            if node.action==1:
+                action=np.array([10,0])
+            else:
+                action=np.array([-10,0])
+            act=self.model._process_fut_act(action)              
+            #_new_a=T.set_subtensor(a)
+            o=self.predict_obs(state,act)
+            t_o=np.array([o[0][0],o[0][1]])
+            print("t_o",t_o)
+            obs=self.model._process_obs(t_o)
+            print("feat_obs",obs)
+            _act=self.model._process_act(action) 
+            state=self.update_state (state,obs,_act)
+            reward, terminal = self.predict(o)
+
+            if not terminal:
+                sre=self.rollout(state,maxdepth)
+            sum_reward = reward+sre
+            node.visits += 1
+            node.parent.visits +=1
+            node.value += sum_reward  
+        node = node.parent
+        n=len(node.children)-1
+        bestucb=0
+        nowucb=0
+        for i in xrange(n): 
+            nowucb=ucb(node.children[i])
+            if T.lt(bestucb, nowucb):                       
+                bestnode=node.children[i]
+                bestucb=nowucb
+        node=bestnode
+        #node = max(node.children, key=ucb)  
+        action=node.action
+        
+        
+        return action
