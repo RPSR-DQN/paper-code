@@ -1,0 +1,12 @@
+This code refers to the paper <a href='https://arxiv.org/pdf/1803.01489.pdf'> code, which come from ''https://github.com/ahefnycmu/rpsp". We take the modeling part of Hefny's thesis code.
+This is Python 2.7 code.
+
+The first step is to install the package:
+Using the following command: </p>
+
+<pre><code>python setup.py install</code></pre>
+
+The second step is to test:
+To run the code, use the following command: </p>
+
+<pre><code>python rpsr-dqn/run/call_test.py [--config <parameter_file>] [--other_key_args]</code></pre>
